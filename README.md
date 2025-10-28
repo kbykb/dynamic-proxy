@@ -58,6 +58,45 @@ go build -o dynamic-proxy
 ./dynamic-proxy
 ```
 
+#### Docker Deployment
+
+**Using Docker:**
+
+```bash
+# Build the image
+docker build -t dynamic-proxy .
+
+# Run the container
+docker run -d \
+  --name dynamic-proxy \
+  -p 1080:1080 \
+  -p 8080:8080 \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  --restart unless-stopped \
+  dynamic-proxy
+```
+
+**Using Docker Compose:**
+
+```bash
+# Start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the service
+docker-compose down
+```
+
+**Docker Configuration:**
+
+The Docker image is built using multi-stage builds for minimal size:
+- Base image: Alpine Linux
+- Includes CA certificates for HTTPS
+- Exposes ports 1080 (SOCKS5) and 8080 (HTTP)
+- Config file can be mounted as a volume for easy updates
+
 ### Configuration
 
 Edit `config.yaml` to customize settings:
@@ -303,6 +342,45 @@ go build -o dynamic-proxy
 # 运行
 ./dynamic-proxy
 ```
+
+#### Docker 部署
+
+**使用 Docker:**
+
+```bash
+# 构建镜像
+docker build -t dynamic-proxy .
+
+# 运行容器
+docker run -d \
+  --name dynamic-proxy \
+  -p 1080:1080 \
+  -p 8080:8080 \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  --restart unless-stopped \
+  dynamic-proxy
+```
+
+**使用 Docker Compose:**
+
+```bash
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+**Docker 配置说明:**
+
+Docker 镜像使用多阶段构建，体积最小化：
+- 基础镜像: Alpine Linux
+- 包含 CA 证书支持 HTTPS
+- 暴露端口 1080 (SOCKS5) 和 8080 (HTTP)
+- 配置文件可通过卷挂载，方便更新
 
 ### 配置说明
 
