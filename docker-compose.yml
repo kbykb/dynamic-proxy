@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  dynamic-proxy:
+    build: .
+    container_name: dynamic-proxy
+    ports:
+      - "1080:1080"  # SOCKS5 port
+      - "8080:8080"  # HTTP proxy port
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro  # Mount config as read-only
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai  # Set timezone (optional)
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    driver: bridge
