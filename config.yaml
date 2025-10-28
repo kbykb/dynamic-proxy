@@ -1,0 +1,26 @@
+# 动态代理配置文件
+
+# 代理列表URL（支持多个）
+proxy_list_urls:
+  - "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
+  # 可以添加更多代理源
+  # - "https://example.com/proxy-list.txt"
+  # - "https://another-source.com/socks5.txt"
+
+# 健康检查并发数（同时测试多少个代理）
+health_check_concurrency: 200
+
+# 代理池更新间隔（分钟）
+update_interval_minutes: 5
+
+# 健康检查超时设置
+health_check:
+  # 总超时时间（秒）
+  total_timeout_seconds: 8
+  # TLS握手性能阈值（秒）
+  tls_handshake_threshold_seconds: 5
+
+# 服务器端口配置
+ports:
+  socks5: ":1080"
+  http: ":8080"
