@@ -4,7 +4,7 @@
 proxy_list_urls:
   - "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
   # 可以添加更多代理源
-  # - "https://example.com/proxy-list.txt"
+  - "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/main/socks5/raw/all.txt"
   # - "https://another-source.com/socks5.txt"
 
 # 健康检查并发数（同时测试多少个代理）
@@ -22,5 +22,7 @@ health_check:
 
 # 服务器端口配置
 ports:
-  socks5: ":1080"
-  http: ":8080"
+  socks5_strict: ":17283"
+  socks5_relaxed: ":17284"
+  http_strict: ":17285"
+  http_relaxed: ":17286"

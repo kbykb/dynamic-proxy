@@ -30,7 +30,7 @@ COPY --from=builder /app/dynamic-proxy .
 COPY config.yaml .
 
 # Expose ports
-EXPOSE 1080 8080
+EXPOSE 17283 17284 17285 17286
 
 # Run the application
 CMD ["./dynamic-proxy"]
