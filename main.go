@@ -30,8 +30,10 @@ type Config struct {
 		TLSHandshakeThresholdSeconds  int `yaml:"tls_handshake_threshold_seconds"`
 	} `yaml:"health_check"`
 	Ports struct {
-		SOCKS5 string `yaml:"socks5"`
-		HTTP   string `yaml:"http"`
+		SOCKS5Strict   string `yaml:"socks5_strict"`
+		SOCKS5Relaxed  string `yaml:"socks5_relaxed"`
+		HTTPStrict     string `yaml:"http_strict"`
+		HTTPRelaxed    string `yaml:"http_relaxed"`
 	} `yaml:"ports"`
 }
 
@@ -66,11 +68,17 @@ func loadConfig(filename string) (*Config, error) {
 	if cfg.HealthCheck.TLSHandshakeThresholdSeconds <= 0 {
 		cfg.HealthCheck.TLSHandshakeThresholdSeconds = 5
 	}
-	if cfg.Ports.SOCKS5 == "" {
-		cfg.Ports.SOCKS5 = ":1080"
+	if cfg.Ports.SOCKS5Strict == "" {
+		cfg.Ports.SOCKS5Strict = ":1080"
 	}
-	if cfg.Ports.HTTP == "" {
-		cfg.Ports.HTTP = ":8080"
+	if cfg.Ports.SOCKS5Relaxed == "" {
+		cfg.Ports.SOCKS5Relaxed = ":1082"
+	}
+	if cfg.Ports.HTTPStrict == "" {
+		cfg.Ports.HTTPStrict = ":8080"
+	}
+	if cfg.Ports.HTTPRelaxed == "" {
+		cfg.Ports.HTTPRelaxed = ":8082"
 	}
 
 	return &cfg, nil
@@ -186,7 +194,7 @@ func fetchProxyList() ([]string, error) {
 	return allProxies, nil
 }
 
-func checkProxyHealth(proxyAddr string) bool {
+func checkProxyHealth(proxyAddr string, strictMode bool) bool {
 	// Create a context with timeout from config
 	totalTimeout := time.Duration(config.HealthCheck.TotalTimeoutSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
@@ -213,7 +221,7 @@ func checkProxyHealth(proxyAddr string) bool {
 		// Perform TLS handshake to test SSL performance
 		tlsConn := tls.Client(conn, &tls.Config{
 			ServerName:         "www.google.com",
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: !strictMode, // Strict mode: verify certificate
 		})
 
 		err = tlsConn.Handshake()
@@ -243,14 +251,22 @@ func checkProxyHealth(proxyAddr string) bool {
 	}
 }
 
-func healthCheckProxies(proxies []string) []string {
+// HealthCheckResult holds the results of health check for both modes
+type HealthCheckResult struct {
+	Strict  []string
+	Relaxed []string
+}
+
+func healthCheckProxies(proxies []string) HealthCheckResult {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	healthy := make([]string, 0)
+	strictHealthy := make([]string, 0)
+	relaxedHealthy := make([]string, 0)
 
 	total := len(proxies)
 	var checked int64
-	var healthyCount int64
+	var strictCount int64
+	var relaxedCount int64
 
 	// Use worker pool to limit concurrent checks (from config)
 	semaphore := make(chan struct{}, config.HealthCheckConcurrency)
@@ -269,7 +285,8 @@ func healthCheckProxies(proxies []string) []string {
 				return
 			case <-ticker.C:
 				current := atomic.LoadInt64(&checked)
-				healthyCurrent := atomic.LoadInt64(&healthyCount)
+				strictCurrent := atomic.LoadInt64(&strictCount)
+				relaxedCurrent := atomic.LoadInt64(&relaxedCount)
 
 				// Only print if progress has changed
 				if current != lastChecked {
@@ -280,8 +297,8 @@ func healthCheckProxies(proxies []string) []string {
 					filled := int(float64(barWidth) * float64(current) / float64(total))
 					bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 
-					log.Printf("[%s] %d/%d (%.1f%%) | Healthy: %d",
-						bar, current, total, percentage, healthyCurrent)
+					log.Printf("[%s] %d/%d (%.1f%%) | Strict: %d | Relaxed: %d",
+						bar, current, total, percentage, strictCurrent, relaxedCurrent)
 
 					lastChecked = current
 				}
@@ -296,11 +313,26 @@ func healthCheckProxies(proxies []string) []string {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			if checkProxyHealth(addr) {
+			// Optimized: check strict mode first
+			strictOK := checkProxyHealth(addr, true)
+
+			if strictOK {
+				// If strict mode passes, relaxed mode must pass too
 				mu.Lock()
-				healthy = append(healthy, addr)
+				strictHealthy = append(strictHealthy, addr)
+				relaxedHealthy = append(relaxedHealthy, addr)
 				mu.Unlock()
-				atomic.AddInt64(&healthyCount, 1)
+				atomic.AddInt64(&strictCount, 1)
+				atomic.AddInt64(&relaxedCount, 1)
+			} else {
+				// Strict mode failed, try relaxed mode
+				relaxedOK := checkProxyHealth(addr, false)
+				if relaxedOK {
+					mu.Lock()
+					relaxedHealthy = append(relaxedHealthy, addr)
+					mu.Unlock()
+					atomic.AddInt64(&relaxedCount, 1)
+				}
 			}
 			atomic.AddInt64(&checked, 1)
 		}(proxyAddr)
@@ -310,19 +342,22 @@ func healthCheckProxies(proxies []string) []string {
 	close(done)
 
 	// Final progress update
-	log.Printf("[%s] %d/%d (100.0%%) | Healthy: %d",
-		strings.Repeat("█", 40), total, total, len(healthy))
+	log.Printf("[%s] %d/%d (100.0%%) | Strict: %d | Relaxed: %d",
+		strings.Repeat("█", 40), total, total, len(strictHealthy), len(relaxedHealthy))
 
-	return healthy
+	return HealthCheckResult{
+		Strict:  strictHealthy,
+		Relaxed: relaxedHealthy,
+	}
 }
 
-func updateProxyPool(pool *ProxyPool) {
+func updateProxyPool(strictPool *ProxyPool, relaxedPool *ProxyPool) {
 	// Check if an update is already in progress
-	if !atomic.CompareAndSwapInt32(&pool.updating, 0, 1) {
+	if !atomic.CompareAndSwapInt32(&strictPool.updating, 0, 1) {
 		log.Println("Proxy update already in progress, skipping...")
 		return
 	}
-	defer atomic.StoreInt32(&pool.updating, 0)
+	defer atomic.StoreInt32(&strictPool.updating, 0)
 
 	log.Println("Fetching proxy list...")
 	proxies, err := fetchProxyList()
@@ -332,20 +367,30 @@ func updateProxyPool(pool *ProxyPool) {
 	}
 
 	log.Printf("Fetched %d proxies, starting health check...", len(proxies))
-	healthy := healthCheckProxies(proxies)
+	result := healthCheckProxies(proxies)
 
-	if len(healthy) > 0 {
-		pool.Update(healthy)
+	// Update strict pool
+	if len(result.Strict) > 0 {
+		strictPool.Update(result.Strict)
+		log.Printf("[STRICT] Pool updated with %d healthy proxies", len(result.Strict))
 	} else {
-		log.Println("Warning: No healthy proxies found, keeping existing pool")
+		log.Println("[STRICT] Warning: No healthy proxies found, keeping existing pool")
+	}
+
+	// Update relaxed pool
+	if len(result.Relaxed) > 0 {
+		relaxedPool.Update(result.Relaxed)
+		log.Printf("[RELAXED] Pool updated with %d healthy proxies", len(result.Relaxed))
+	} else {
+		log.Println("[RELAXED] Warning: No healthy proxies found, keeping existing pool")
 	}
 }
 
-func startProxyUpdater(pool *ProxyPool, initialSync bool) {
+func startProxyUpdater(strictPool *ProxyPool, relaxedPool *ProxyPool, initialSync bool) {
 	if initialSync {
 		// Initial update synchronously to ensure we have proxies before starting servers
 		log.Println("Performing initial proxy update...")
-		updateProxyPool(pool)
+		updateProxyPool(strictPool, relaxedPool)
 	}
 
 	// Periodic updates - each update runs in its own goroutine to avoid blocking
@@ -353,7 +398,7 @@ func startProxyUpdater(pool *ProxyPool, initialSync bool) {
 	ticker := time.NewTicker(updateInterval)
 	go func() {
 		for range ticker.C {
-			go updateProxyPool(pool)
+			go updateProxyPool(strictPool, relaxedPool)
 		}
 	}()
 }
@@ -361,6 +406,7 @@ func startProxyUpdater(pool *ProxyPool, initialSync bool) {
 // SOCKS5 Proxy Server
 type CustomDialer struct {
 	pool *ProxyPool
+	mode string // "STRICT" or "RELAXED"
 }
 
 // LoggedConn wraps a net.Conn to log when it's closed
@@ -407,29 +453,29 @@ func (c *LoggedConn) Write(b []byte) (n int, err error) {
 }
 
 func (d *CustomDialer) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	log.Printf("[SOCKS5] Incoming request: %s -> %s", network, addr)
+	log.Printf("[SOCKS5-%s] Incoming request: %s -> %s", d.mode, network, addr)
 
 	proxyAddr, err := d.pool.GetNext()
 	if err != nil {
-		log.Printf("[SOCKS5] ERROR: No proxy available for %s: %v", addr, err)
+		log.Printf("[SOCKS5-%s] ERROR: No proxy available for %s: %v", d.mode, addr, err)
 		return nil, err
 	}
 
-	log.Printf("[SOCKS5] Using proxy %s for %s", proxyAddr, addr)
+	log.Printf("[SOCKS5-%s] Using proxy %s for %s", d.mode, proxyAddr, addr)
 
 	dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 	if err != nil {
-		log.Printf("[SOCKS5] ERROR: Failed to create dialer for proxy %s: %v", proxyAddr, err)
+		log.Printf("[SOCKS5-%s] ERROR: Failed to create dialer for proxy %s: %v", d.mode, proxyAddr, err)
 		return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
 	}
 
 	conn, err := dialer.Dial(network, addr)
 	if err != nil {
-		log.Printf("[SOCKS5] ERROR: Failed to connect to %s via proxy %s: %v", addr, proxyAddr, err)
+		log.Printf("[SOCKS5-%s] ERROR: Failed to connect to %s via proxy %s: %v", d.mode, addr, proxyAddr, err)
 		return nil, fmt.Errorf("failed to dial through proxy %s: %w", proxyAddr, err)
 	}
 
-	log.Printf("[SOCKS5] SUCCESS: Connected to %s via proxy %s", addr, proxyAddr)
+	log.Printf("[SOCKS5-%s] SUCCESS: Connected to %s via proxy %s", d.mode, addr, proxyAddr)
 
 	// Wrap the connection to log read/write errors and close events
 	loggedConn := &LoggedConn{
@@ -442,13 +488,13 @@ func (d *CustomDialer) Dial(ctx context.Context, network, addr string) (net.Conn
 	return loggedConn, nil
 }
 
-func startSOCKS5Server(pool *ProxyPool, port string) error {
-	// Create a custom logger with [SOCKS5-LIB] prefix
-	socks5Logger := log.New(log.Writer(), "[SOCKS5-LIB] ", log.LstdFlags)
+func startSOCKS5Server(pool *ProxyPool, port string, mode string) error {
+	// Create a custom logger with mode-specific prefix
+	socks5Logger := log.New(log.Writer(), fmt.Sprintf("[SOCKS5-%s-LIB] ", mode), log.LstdFlags)
 
 	conf := &socks5.Config{
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialer := &CustomDialer{pool: pool}
+			dialer := &CustomDialer{pool: pool, mode: mode}
 			return dialer.Dial(ctx, network, addr)
 		},
 		Logger: socks5Logger,
@@ -459,34 +505,34 @@ func startSOCKS5Server(pool *ProxyPool, port string) error {
 		return fmt.Errorf("failed to create SOCKS5 server: %w", err)
 	}
 
-	log.Printf("SOCKS5 proxy server listening on %s", port)
+	log.Printf("[%s] SOCKS5 proxy server listening on %s", mode, port)
 	return server.ListenAndServe("tcp", port)
 }
 
 // HTTP Proxy Server
-func handleHTTPProxy(w http.ResponseWriter, r *http.Request, pool *ProxyPool) {
-	log.Printf("[HTTP] Incoming request: %s %s from %s", r.Method, r.URL.String(), r.RemoteAddr)
+func handleHTTPProxy(w http.ResponseWriter, r *http.Request, pool *ProxyPool, mode string) {
+	log.Printf("[HTTP-%s] Incoming request: %s %s from %s", mode, r.Method, r.URL.String(), r.RemoteAddr)
 
 	proxyAddr, err := pool.GetNext()
 	if err != nil {
-		log.Printf("[HTTP] ERROR: No proxy available for %s %s: %v", r.Method, r.URL.String(), err)
+		log.Printf("[HTTP-%s] ERROR: No proxy available for %s %s: %v", mode, r.Method, r.URL.String(), err)
 		http.Error(w, "No available proxies", http.StatusServiceUnavailable)
 		return
 	}
 
-	log.Printf("[HTTP] Using proxy %s for %s %s", proxyAddr, r.Method, r.URL.String())
+	log.Printf("[HTTP-%s] Using proxy %s for %s %s", mode, proxyAddr, r.Method, r.URL.String())
 
 	// Create SOCKS5 dialer
 	dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 	if err != nil {
-		log.Printf("[HTTP] ERROR: Failed to create dialer for proxy %s: %v", proxyAddr, err)
+		log.Printf("[HTTP-%s] ERROR: Failed to create dialer for proxy %s: %v", mode, proxyAddr, err)
 		http.Error(w, "Failed to create proxy dialer", http.StatusInternalServerError)
 		return
 	}
 
 	// Handle CONNECT method for HTTPS
 	if r.Method == http.MethodConnect {
-		handleHTTPSProxy(w, r, dialer, proxyAddr)
+		handleHTTPSProxy(w, r, dialer, proxyAddr, mode)
 		return
 	}
 
@@ -520,13 +566,13 @@ func handleHTTPProxy(w http.ResponseWriter, r *http.Request, pool *ProxyPool) {
 	// Send request
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("[HTTP] ERROR: Request failed for %s: %v", r.URL.String(), err)
+		log.Printf("[HTTP-%s] ERROR: Request failed for %s: %v", mode, r.URL.String(), err)
 		http.Error(w, fmt.Sprintf("Proxy request failed: %v", err), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[HTTP] SUCCESS: Got response %d for %s", resp.StatusCode, r.URL.String())
+	log.Printf("[HTTP-%s] SUCCESS: Got response %d for %s", mode, resp.StatusCode, r.URL.String())
 
 	// Copy response headers
 	for key, values := range resp.Header {
@@ -539,13 +585,13 @@ func handleHTTPProxy(w http.ResponseWriter, r *http.Request, pool *ProxyPool) {
 	io.Copy(w, resp.Body)
 }
 
-func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Dialer, proxyAddr string) {
-	log.Printf("[HTTPS] Connecting to %s via proxy %s", r.Host, proxyAddr)
+func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Dialer, proxyAddr string, mode string) {
+	log.Printf("[HTTPS-%s] Connecting to %s via proxy %s", mode, r.Host, proxyAddr)
 
 	// Connect to target through SOCKS5 proxy
 	targetConn, err := dialer.Dial("tcp", r.Host)
 	if err != nil {
-		log.Printf("[HTTPS] ERROR: Failed to connect to %s via proxy %s: %v", r.Host, proxyAddr, err)
+		log.Printf("[HTTPS-%s] ERROR: Failed to connect to %s via proxy %s: %v", mode, r.Host, proxyAddr, err)
 		http.Error(w, "Failed to connect to target", http.StatusBadGateway)
 		return
 	}
@@ -554,14 +600,14 @@ func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Diale
 	// Hijack the connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Printf("[HTTPS] ERROR: Hijacking not supported for %s", r.Host)
+		log.Printf("[HTTPS-%s] ERROR: Hijacking not supported for %s", mode, r.Host)
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
 	}
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[HTTPS] ERROR: Failed to hijack connection for %s: %v", r.Host, err)
+		log.Printf("[HTTPS-%s] ERROR: Failed to hijack connection for %s: %v", mode, r.Host, err)
 		http.Error(w, "Failed to hijack connection", http.StatusInternalServerError)
 		return
 	}
@@ -569,7 +615,7 @@ func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Diale
 
 	// Send 200 Connection Established
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	log.Printf("[HTTPS] SUCCESS: Tunnel established to %s via proxy %s", r.Host, proxyAddr)
+	log.Printf("[HTTPS-%s] SUCCESS: Tunnel established to %s via proxy %s", mode, r.Host, proxyAddr)
 
 	// Bidirectional copy
 	var wg sync.WaitGroup
@@ -588,9 +634,9 @@ func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Diale
 	wg.Wait()
 }
 
-func startHTTPServer(pool *ProxyPool, port string) error {
+func startHTTPServer(pool *ProxyPool, port string, mode string) error {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleHTTPProxy(w, r, pool)
+		handleHTTPProxy(w, r, pool, mode)
 	})
 
 	server := &http.Server{
@@ -598,7 +644,7 @@ func startHTTPServer(pool *ProxyPool, port string) error {
 		Handler: handler,
 	}
 
-	log.Printf("HTTP proxy server listening on %s", port)
+	log.Printf("[%s] HTTP proxy server listening on %s", mode, port)
 	return server.ListenAndServe()
 }
 
@@ -623,43 +669,75 @@ func main() {
 	log.Printf("  - Health check timeout: %ds (TLS threshold: %ds)",
 		config.HealthCheck.TotalTimeoutSeconds,
 		config.HealthCheck.TLSHandshakeThresholdSeconds)
-	log.Printf("  - SOCKS5 port: %s", config.Ports.SOCKS5)
-	log.Printf("  - HTTP port: %s", config.Ports.HTTP)
+	log.Printf("  - SOCKS5 Strict port: %s", config.Ports.SOCKS5Strict)
+	log.Printf("  - SOCKS5 Relaxed port: %s", config.Ports.SOCKS5Relaxed)
+	log.Printf("  - HTTP Strict port: %s", config.Ports.HTTPStrict)
+	log.Printf("  - HTTP Relaxed port: %s", config.Ports.HTTPRelaxed)
 
-	pool := NewProxyPool()
+	// Create two proxy pools
+	strictPool := NewProxyPool()
+	relaxedPool := NewProxyPool()
 
 	// Start proxy updater with initial synchronous update
-	startProxyUpdater(pool, true)
+	startProxyUpdater(strictPool, relaxedPool, true)
 
-	// Check if we have any proxies
-	if len(pool.GetAll()) == 0 {
-		log.Println("Warning: No healthy proxies available, but starting servers anyway...")
-		log.Println("Servers will return errors until proxies become available")
+	// Check proxy pool status
+	strictCount := len(strictPool.GetAll())
+	relaxedCount := len(relaxedPool.GetAll())
+
+	if strictCount == 0 {
+		log.Println("[STRICT] Warning: No healthy proxies available")
+		log.Println("[STRICT] Strict mode servers will return errors until proxies become available")
 	} else {
-		log.Printf("Successfully loaded %d healthy proxies", len(pool.GetAll()))
+		log.Printf("[STRICT] Successfully loaded %d healthy proxies", strictCount)
 	}
 
-	// Start servers
-	var wg sync.WaitGroup
-	wg.Add(2)
+	if relaxedCount == 0 {
+		log.Println("[RELAXED] Warning: No healthy proxies available")
+		log.Println("[RELAXED] Relaxed mode servers will return errors until proxies become available")
+	} else {
+		log.Printf("[RELAXED] Successfully loaded %d healthy proxies", relaxedCount)
+	}
 
+	// Start servers (4 servers total)
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	// SOCKS5 Strict
 	go func() {
 		defer wg.Done()
-		if err := startSOCKS5Server(pool, config.Ports.SOCKS5); err != nil {
-			log.Fatalf("SOCKS5 server error: %v", err)
+		if err := startSOCKS5Server(strictPool, config.Ports.SOCKS5Strict, "STRICT"); err != nil {
+			log.Fatalf("[STRICT] SOCKS5 server error: %v", err)
 		}
 	}()
 
+	// SOCKS5 Relaxed
 	go func() {
 		defer wg.Done()
-		if err := startHTTPServer(pool, config.Ports.HTTP); err != nil {
-			log.Fatalf("HTTP server error: %v", err)
+		if err := startSOCKS5Server(relaxedPool, config.Ports.SOCKS5Relaxed, "RELAXED"); err != nil {
+			log.Fatalf("[RELAXED] SOCKS5 server error: %v", err)
+		}
+	}()
+
+	// HTTP Strict
+	go func() {
+		defer wg.Done()
+		if err := startHTTPServer(strictPool, config.Ports.HTTPStrict, "STRICT"); err != nil {
+			log.Fatalf("[STRICT] HTTP server error: %v", err)
+		}
+	}()
+
+	// HTTP Relaxed
+	go func() {
+		defer wg.Done()
+		if err := startHTTPServer(relaxedPool, config.Ports.HTTPRelaxed, "RELAXED"); err != nil {
+			log.Fatalf("[RELAXED] HTTP server error: %v", err)
 		}
 	}()
 
 	log.Println("All servers started successfully")
-	log.Println("  - SOCKS5 proxy: " + config.Ports.SOCKS5)
-	log.Println("  - HTTP proxy: " + config.Ports.HTTP)
-	log.Printf("Proxy pool will update every %d minutes in background...", config.UpdateIntervalMinutes)
+	log.Println("  [STRICT] SOCKS5: " + config.Ports.SOCKS5Strict + " | HTTP: " + config.Ports.HTTPStrict)
+	log.Println("  [RELAXED] SOCKS5: " + config.Ports.SOCKS5Relaxed + " | HTTP: " + config.Ports.HTTPRelaxed)
+	log.Printf("Proxy pools will update every %d minutes in background...", config.UpdateIntervalMinutes)
 	wg.Wait()
 }

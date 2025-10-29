@@ -5,8 +5,10 @@ services:
     build: .
     container_name: dynamic-proxy
     ports:
-      - "1080:1080"  # SOCKS5 port
-      - "8080:8080"  # HTTP proxy port
+      - "17283:17283"  # SOCKS5 Strict (SSL verification enabled)
+      - "17284:17284"  # SOCKS5 Relaxed (SSL verification disabled)
+      - "17285:17285"  # HTTP Strict (SSL verification enabled)
+      - "17286:17286"  # HTTP Relaxed (SSL verification disabled)
     volumes:
       - ./config.yaml:/app/config.yaml:ro  # Mount config as read-only
     restart: unless-stopped

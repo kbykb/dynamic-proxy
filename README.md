@@ -20,6 +20,7 @@ A high-performance SOCKS5/HTTP dynamic proxy server that automatically fetches, 
 - 📊 **Real-time Progress**: Live progress bar during health checks
 - 🎯 **Smart Filtering**: Automatically removes slow and unreliable proxies
 - 🔁 **Auto Update**: Periodic proxy pool refresh (configurable interval)
+- 🔐 **Dual Mode**: Strict mode (SSL verification enabled) and Relaxed mode (SSL verification disabled)
 
 ### Quick Start
 
@@ -69,8 +70,10 @@ docker build -t dynamic-proxy .
 # Run the container
 docker run -d \
   --name dynamic-proxy \
-  -p 1080:1080 \
-  -p 8080:8080 \
+  -p 17283:17283 \
+  -p 17284:17284 \
+  -p 17285:17285 \
+  -p 17286:17286 \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   --restart unless-stopped \
   dynamic-proxy
@@ -94,7 +97,11 @@ docker-compose down
 The Docker image is built using multi-stage builds for minimal size:
 - Base image: Alpine Linux
 - Includes CA certificates for HTTPS
-- Exposes ports 1080 (SOCKS5) and 8080 (HTTP)
+- Exposes ports:
+  - 17283 (SOCKS5 Strict - SSL verification enabled)
+  - 17284 (SOCKS5 Relaxed - SSL verification disabled)
+  - 17285 (HTTP Strict - SSL verification enabled)
+  - 17286 (HTTP Relaxed - SSL verification disabled)
 - Config file can be mounted as a volume for easy updates
 
 ### Configuration
@@ -105,6 +112,7 @@ Edit `config.yaml` to customize settings:
 # Proxy list URLs (supports multiple sources)
 proxy_list_urls:
   - "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
+  - "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/main/socks5/raw/all.txt"
   # Add more sources
   # - "https://example.com/proxy-list.txt"
 
@@ -121,43 +129,61 @@ health_check:
 
 # Server ports
 ports:
-  socks5: ":1080"
-  http: ":8080"
+  socks5_strict: ":17283"    # SOCKS5 with SSL verification
+  socks5_relaxed: ":17284"   # SOCKS5 without SSL verification
+  http_strict: ":17285"      # HTTP with SSL verification
+  http_relaxed: ":17286"     # HTTP without SSL verification
 ```
 
 #### Configuration Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `proxy_list_urls` | List of proxy source URLs | 1 source |
+| `proxy_list_urls` | List of proxy source URLs | 2 sources |
 | `health_check_concurrency` | Concurrent health checks | 200 |
 | `update_interval_minutes` | Proxy pool refresh interval | 5 minutes |
 | `total_timeout_seconds` | Health check total timeout | 8 seconds |
 | `tls_handshake_threshold_seconds` | Max TLS handshake time | 5 seconds |
-| `ports.socks5` | SOCKS5 server port | :1080 |
-| `ports.http` | HTTP proxy server port | :8080 |
+| `ports.socks5_strict` | SOCKS5 server port (SSL verification enabled) | :17283 |
+| `ports.socks5_relaxed` | SOCKS5 server port (SSL verification disabled) | :17284 |
+| `ports.http_strict` | HTTP proxy server port (SSL verification enabled) | :17285 |
+| `ports.http_relaxed` | HTTP proxy server port (SSL verification disabled) | :17286 |
 
 ### Usage
 
 #### Command Line
 
 ```bash
-# Test with curl (SOCKS5)
-curl --socks5 127.0.0.1:1080 https://api.ipify.org
+# Test with curl (SOCKS5 Strict - SSL verification enabled)
+curl --socks5 127.0.0.1:17283 https://api.ipify.org
 
-# Test with curl (HTTP)
-curl -x http://127.0.0.1:8080 https://api.ipify.org
+# Test with curl (SOCKS5 Relaxed - SSL verification disabled)
+curl --socks5 127.0.0.1:17284 https://api.ipify.org
+
+# Test with curl (HTTP Strict - SSL verification enabled)
+curl -x http://127.0.0.1:17285 https://api.ipify.org
+
+# Test with curl (HTTP Relaxed - SSL verification disabled)
+curl -x http://127.0.0.1:17286 https://api.ipify.org
 ```
 
 #### Browser Configuration
 
-**SOCKS5 Proxy:**
+**SOCKS5 Proxy (Strict Mode - Recommended):**
 - Host: `127.0.0.1`
-- Port: `1080`
+- Port: `17283`
 
-**HTTP Proxy:**
+**SOCKS5 Proxy (Relaxed Mode - For compatibility):**
 - Host: `127.0.0.1`
-- Port: `8080`
+- Port: `17284`
+
+**HTTP Proxy (Strict Mode - Recommended):**
+- Host: `127.0.0.1`
+- Port: `17285`
+
+**HTTP Proxy (Relaxed Mode - For compatibility):**
+- Host: `127.0.0.1`
+- Port: `17286`
 
 #### Programming Examples
 
@@ -166,18 +192,34 @@ curl -x http://127.0.0.1:8080 https://api.ipify.org
 ```python
 import requests
 
-# HTTP Proxy
+# HTTP Proxy (Strict Mode - Recommended)
 proxies = {
-    'http': 'http://127.0.0.1:8080',
-    'https': 'http://127.0.0.1:8080'
+    'http': 'http://127.0.0.1:17285',
+    'https': 'http://127.0.0.1:17285'
 }
 response = requests.get('https://api.ipify.org', proxies=proxies)
 print(response.text)
 
-# SOCKS5 Proxy
+# HTTP Proxy (Relaxed Mode - For compatibility)
 proxies = {
-    'http': 'socks5://127.0.0.1:1080',
-    'https': 'socks5://127.0.0.1:1080'
+    'http': 'http://127.0.0.1:17286',
+    'https': 'http://127.0.0.1:17286'
+}
+response = requests.get('https://api.ipify.org', proxies=proxies)
+print(response.text)
+
+# SOCKS5 Proxy (Strict Mode - Recommended)
+proxies = {
+    'http': 'socks5://127.0.0.1:17283',
+    'https': 'socks5://127.0.0.1:17283'
+}
+response = requests.get('https://api.ipify.org', proxies=proxies)
+print(response.text)
+
+# SOCKS5 Proxy (Relaxed Mode - For compatibility)
+proxies = {
+    'http': 'socks5://127.0.0.1:17284',
+    'https': 'socks5://127.0.0.1:17284'
 }
 response = requests.get('https://api.ipify.org', proxies=proxies)
 print(response.text)
@@ -189,16 +231,29 @@ print(response.text)
 const axios = require('axios');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-// SOCKS5 Proxy
-const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
-axios.get('https://api.ipify.org', { httpAgent: agent, httpsAgent: agent })
+// SOCKS5 Proxy (Strict Mode - Recommended)
+const strictAgent = new SocksProxyAgent('socks5://127.0.0.1:17283');
+axios.get('https://api.ipify.org', { httpAgent: strictAgent, httpsAgent: strictAgent })
   .then(response => console.log(response.data));
 
-// HTTP Proxy
+// SOCKS5 Proxy (Relaxed Mode - For compatibility)
+const relaxedAgent = new SocksProxyAgent('socks5://127.0.0.1:17284');
+axios.get('https://api.ipify.org', { httpAgent: relaxedAgent, httpsAgent: relaxedAgent })
+  .then(response => console.log(response.data));
+
+// HTTP Proxy (Strict Mode - Recommended)
 axios.get('https://api.ipify.org', {
   proxy: {
     host: '127.0.0.1',
-    port: 8080
+    port: 17285
+  }
+}).then(response => console.log(response.data));
+
+// HTTP Proxy (Relaxed Mode - For compatibility)
+axios.get('https://api.ipify.org', {
+  proxy: {
+    host: '127.0.0.1',
+    port: 17286
   }
 }).then(response => console.log(response.data));
 ```
@@ -207,10 +262,13 @@ axios.get('https://api.ipify.org', {
 
 1. **Proxy Fetching**: Fetches proxy lists from configured URLs at startup
 2. **Health Check**: Concurrent health checks with TLS handshake verification
-3. **Proxy Pool**: Maintains a pool of healthy, fast proxies
-4. **Auto Update**: Refreshes proxy pool at configured intervals
+   - **Strict Mode**: Tests with SSL certificate verification enabled
+   - **Relaxed Mode**: Tests with SSL certificate verification disabled
+   - **Optimization**: If a proxy passes strict mode, it's automatically added to both pools
+3. **Dual Proxy Pools**: Maintains two separate pools (strict and relaxed) of healthy, fast proxies
+4. **Auto Update**: Refreshes both proxy pools at configured intervals
 5. **Round-Robin**: Distributes requests across proxies using round-robin algorithm
-6. **Dual Protocol**: Serves both SOCKS5 and HTTP proxy protocols
+6. **Dual Protocol**: Serves both SOCKS5 and HTTP proxy protocols in both modes (4 servers total)
 
 ### Architecture
 
@@ -227,26 +285,31 @@ axios.get('https://api.ipify.org', {
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐
-│ Health Check    │
-│ (200 concurrent)│
-│ - TCP Connect   │
-│ - TLS Handshake │
-│ - Speed Filter  │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Proxy Pool    │
-│ (Healthy Only)  │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌────────┐
-│SOCKS5  │ │  HTTP  │
-│:1080   │ │ :8080  │
-└────────┘ └────────┘
+┌─────────────────────────────────────┐
+│         Health Check                │
+│        (200 concurrent)             │
+│  ┌──────────────┐  ┌──────────────┐│
+│  │ Strict Mode  │  │Relaxed Mode  ││
+│  │ (SSL verify) │  │(No SSL verify)││
+│  │ - TCP Connect│  │- TCP Connect ││
+│  │ - TLS + Cert │  │- TLS Only    ││
+│  │ - Speed Test │  │- Speed Test  ││
+│  └──────────────┘  └──────────────┘│
+└────────┬────────────────┬───────────┘
+         │                │
+         ▼                ▼
+┌─────────────────┐ ┌─────────────────┐
+│  Strict Pool    │ │  Relaxed Pool   │
+│(SSL Verified)   │ │(More Compatible)│
+└────────┬────────┘ └────────┬────────┘
+         │                   │
+    ┌────┴────┐         ┌────┴────┐
+    ▼         ▼         ▼         ▼
+┌────────┐┌────────┐┌────────┐┌────────┐
+│SOCKS5  ││  HTTP  ││SOCKS5  ││  HTTP  │
+│Strict  ││ Strict ││Relaxed ││Relaxed │
+│:17283  ││ :17285 ││:17284  ││ :17286 │
+└────────┘└────────┘└────────┘└────────┘
 ```
 
 ### Performance
@@ -305,6 +368,7 @@ MIT License
 - 📊 **实时进度**: 健康检查时的实时进度条
 - 🎯 **智能过滤**: 自动移除慢速和不可靠的代理
 - 🔁 **自动更新**: 定期刷新代理池（可配置间隔）
+- 🔐 **双模式**: 严格模式（启用SSL验证）和宽松模式（禁用SSL验证）
 
 ### 快速开始
 
@@ -354,8 +418,10 @@ docker build -t dynamic-proxy .
 # 运行容器
 docker run -d \
   --name dynamic-proxy \
-  -p 1080:1080 \
-  -p 8080:8080 \
+  -p 17283:17283 \
+  -p 17284:17284 \
+  -p 17285:17285 \
+  -p 17286:17286 \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   --restart unless-stopped \
   dynamic-proxy
@@ -379,7 +445,11 @@ docker-compose down
 Docker 镜像使用多阶段构建，体积最小化：
 - 基础镜像: Alpine Linux
 - 包含 CA 证书支持 HTTPS
-- 暴露端口 1080 (SOCKS5) 和 8080 (HTTP)
+- 暴露端口:
+  - 17283 (SOCKS5 严格模式 - 启用SSL验证)
+  - 17284 (SOCKS5 宽松模式 - 禁用SSL验证)
+  - 17285 (HTTP 严格模式 - 启用SSL验证)
+  - 17286 (HTTP 宽松模式 - 禁用SSL验证)
 - 配置文件可通过卷挂载，方便更新
 
 ### 配置说明
@@ -390,6 +460,7 @@ Docker 镜像使用多阶段构建，体积最小化：
 # 代理列表URL（支持多个源）
 proxy_list_urls:
   - "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
+  - "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/main/socks5/raw/all.txt"
   # 添加更多源
   # - "https://example.com/proxy-list.txt"
 
@@ -406,43 +477,61 @@ health_check:
 
 # 服务器端口
 ports:
-  socks5: ":1080"
-  http: ":8080"
+  socks5_strict: ":17283"    # SOCKS5 严格模式（启用SSL验证）
+  socks5_relaxed: ":17284"   # SOCKS5 宽松模式（禁用SSL验证）
+  http_strict: ":17285"      # HTTP 严格模式（启用SSL验证）
+  http_relaxed: ":17286"     # HTTP 宽松模式（禁用SSL验证）
 ```
 
 #### 配置选项
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `proxy_list_urls` | 代理源URL列表 | 1个源 |
+| `proxy_list_urls` | 代理源URL列表 | 2个源 |
 | `health_check_concurrency` | 并发健康检查数 | 200 |
 | `update_interval_minutes` | 代理池刷新间隔 | 5分钟 |
 | `total_timeout_seconds` | 健康检查总超时 | 8秒 |
 | `tls_handshake_threshold_seconds` | 最大TLS握手时间 | 5秒 |
-| `ports.socks5` | SOCKS5服务器端口 | :1080 |
-| `ports.http` | HTTP代理服务器端口 | :8080 |
+| `ports.socks5_strict` | SOCKS5服务器端口（启用SSL验证） | :17283 |
+| `ports.socks5_relaxed` | SOCKS5服务器端口（禁用SSL验证） | :17284 |
+| `ports.http_strict` | HTTP代理服务器端口（启用SSL验证） | :17285 |
+| `ports.http_relaxed` | HTTP代理服务器端口（禁用SSL验证） | :17286 |
 
 ### 使用方法
 
 #### 命令行
 
 ```bash
-# 使用curl测试（SOCKS5）
-curl --socks5 127.0.0.1:1080 https://api.ipify.org
+# 使用curl测试（SOCKS5 严格模式 - 启用SSL验证）
+curl --socks5 127.0.0.1:17283 https://api.ipify.org
 
-# 使用curl测试（HTTP）
-curl -x http://127.0.0.1:8080 https://api.ipify.org
+# 使用curl测试（SOCKS5 宽松模式 - 禁用SSL验证）
+curl --socks5 127.0.0.1:17284 https://api.ipify.org
+
+# 使用curl测试（HTTP 严格模式 - 启用SSL验证）
+curl -x http://127.0.0.1:17285 https://api.ipify.org
+
+# 使用curl测试（HTTP 宽松模式 - 禁用SSL验证）
+curl -x http://127.0.0.1:17286 https://api.ipify.org
 ```
 
 #### 浏览器配置
 
-**SOCKS5代理：**
+**SOCKS5代理（严格模式 - 推荐）：**
 - 主机: `127.0.0.1`
-- 端口: `1080`
+- 端口: `17283`
 
-**HTTP代理：**
+**SOCKS5代理（宽松模式 - 兼容性）：**
 - 主机: `127.0.0.1`
-- 端口: `8080`
+- 端口: `17284`
+
+**HTTP代理（严格模式 - 推荐）：**
+- 主机: `127.0.0.1`
+- 端口: `17285`
+
+**HTTP代理（宽松模式 - 兼容性）：**
+- 主机: `127.0.0.1`
+- 端口: `17286`
 
 #### 编程示例
 
@@ -451,18 +540,34 @@ curl -x http://127.0.0.1:8080 https://api.ipify.org
 ```python
 import requests
 
-# HTTP代理
+# HTTP代理（严格模式 - 推荐）
 proxies = {
-    'http': 'http://127.0.0.1:8080',
-    'https': 'http://127.0.0.1:8080'
+    'http': 'http://127.0.0.1:17285',
+    'https': 'http://127.0.0.1:17285'
 }
 response = requests.get('https://api.ipify.org', proxies=proxies)
 print(response.text)
 
-# SOCKS5代理
+# HTTP代理（宽松模式 - 兼容性）
 proxies = {
-    'http': 'socks5://127.0.0.1:1080',
-    'https': 'socks5://127.0.0.1:1080'
+    'http': 'http://127.0.0.1:17286',
+    'https': 'http://127.0.0.1:17286'
+}
+response = requests.get('https://api.ipify.org', proxies=proxies)
+print(response.text)
+
+# SOCKS5代理（严格模式 - 推荐）
+proxies = {
+    'http': 'socks5://127.0.0.1:17283',
+    'https': 'socks5://127.0.0.1:17283'
+}
+response = requests.get('https://api.ipify.org', proxies=proxies)
+print(response.text)
+
+# SOCKS5代理（宽松模式 - 兼容性）
+proxies = {
+    'http': 'socks5://127.0.0.1:17284',
+    'https': 'socks5://127.0.0.1:17284'
 }
 response = requests.get('https://api.ipify.org', proxies=proxies)
 print(response.text)
@@ -474,16 +579,29 @@ print(response.text)
 const axios = require('axios');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-// SOCKS5代理
-const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
-axios.get('https://api.ipify.org', { httpAgent: agent, httpsAgent: agent })
+// SOCKS5代理（严格模式 - 推荐）
+const strictAgent = new SocksProxyAgent('socks5://127.0.0.1:17283');
+axios.get('https://api.ipify.org', { httpAgent: strictAgent, httpsAgent: strictAgent })
   .then(response => console.log(response.data));
 
-// HTTP代理
+// SOCKS5代理（宽松模式 - 兼容性）
+const relaxedAgent = new SocksProxyAgent('socks5://127.0.0.1:17284');
+axios.get('https://api.ipify.org', { httpAgent: relaxedAgent, httpsAgent: relaxedAgent })
+  .then(response => console.log(response.data));
+
+// HTTP代理（严格模式 - 推荐）
 axios.get('https://api.ipify.org', {
   proxy: {
     host: '127.0.0.1',
-    port: 8080
+    port: 17285
+  }
+}).then(response => console.log(response.data));
+
+// HTTP代理（宽松模式 - 兼容性）
+axios.get('https://api.ipify.org', {
+  proxy: {
+    host: '127.0.0.1',
+    port: 17286
   }
 }).then(response => console.log(response.data));
 ```
@@ -492,10 +610,13 @@ axios.get('https://api.ipify.org', {
 
 1. **代理获取**: 启动时从配置的URL获取代理列表
 2. **健康检查**: 并发健康检查，包含TLS握手验证
-3. **代理池**: 维护健康、快速的代理池
-4. **自动更新**: 按配置间隔刷新代理池
+   - **严格模式**: 启用SSL证书验证进行测试
+   - **宽松模式**: 禁用SSL证书验证进行测试
+   - **优化策略**: 如果代理通过严格模式测试，自动添加到两个池
+3. **双代理池**: 维护两个独立的代理池（严格和宽松）
+4. **自动更新**: 按配置间隔刷新两个代理池
 5. **轮询分配**: 使用轮询算法分配请求到代理
-6. **双协议**: 同时提供SOCKS5和HTTP代理协议
+6. **双协议**: 同时提供SOCKS5和HTTP代理协议，每种协议都有两种模式（共4个服务器）
 
 ### 架构图
 
@@ -512,26 +633,31 @@ axios.get('https://api.ipify.org', {
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐
-│   健康检查      │
-│  (200并发)      │
-│ - TCP连接       │
-│ - TLS握手       │
-│ - 速度过滤      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    代理池       │
-│  (仅健康代理)   │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌────────┐
-│SOCKS5  │ │  HTTP  │
-│:1080   │ │ :8080  │
-└────────┘ └────────┘
+┌─────────────────────────────────────┐
+│          健康检查                   │
+│         (200并发)                   │
+│  ┌──────────────┐  ┌──────────────┐│
+│  │  严格模式    │  │  宽松模式    ││
+│  │ (SSL验证)    │  │(无SSL验证)   ││
+│  │ - TCP连接    │  │- TCP连接     ││
+│  │ - TLS+证书   │  │- 仅TLS       ││
+│  │ - 速度测试   │  │- 速度测试    ││
+│  └──────────────┘  └──────────────┘│
+└────────┬────────────────┬───────────┘
+         │                │
+         ▼                ▼
+┌─────────────────┐ ┌─────────────────┐
+│   严格代理池    │ │   宽松代理池    │
+│  (SSL已验证)    │ │  (更高兼容性)   │
+└────────┬────────┘ └────────┬────────┘
+         │                   │
+    ┌────┴────┐         ┌────┴────┐
+    ▼         ▼         ▼         ▼
+┌────────┐┌────────┐┌────────┐┌────────┐
+│SOCKS5  ││  HTTP  ││SOCKS5  ││  HTTP  │
+│严格    ││ 严格   ││宽松    ││ 宽松   │
+│:17283  ││ :17285 ││:17284  ││ :17286 │
+└────────┘└────────┘└────────┘└────────┘
 ```
 
 ### 性能特性

@@ -37,3 +37,6 @@ dynamic-proxy-*
 
 # Local configuration override (uncomment if you want to ignore local config changes)
 # config.yaml
+
+# Claude Code configuration
+.claude/
