@@ -1,11 +1,27 @@
 # 动态代理配置文件
 
-# 代理列表URL（支持多个）
+# 代理列表URL（支持多种协议格式，纯字符串处理）
+# 支持格式：
+#   - 纯 ip:port           → 192.168.1.1:8080
+#   - http://ip:port       → http://1.2.3.4:80
+#   - https://ip:port      → https://5.6.7.8:443
+#   - socks5://ip:port     → socks5://9.10.11.12:1080
+#   - socks4://ip:port     → socks4://13.14.15.16:1080
 proxy_list_urls:
   - "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
-  # 可以添加更多代理源
+  # 可以添加更多代理源（支持 http/https/socks4/socks5 协议）
   - "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/main/socks5/raw/all.txt"
-  # - "https://another-source.com/socks5.txt"
+  # - "https://example.com/http-proxies.txt"
+  # - "https://example.com/socks4-proxies.txt"
+
+# 特殊代理列表URL（复杂格式，支持额外文本描述）
+# 使用简单正则自动提取 ip:port，忽略协议前缀和描述文本
+# 例如：socks5://83.217.209.26:1 [[家宽] 英国 英格兰 纽伯里 [Vodafone Broadband]]
+#       http://1.2.3.4:8080 [美国 纽约]
+#       随便什么 192.168.1.1:8080 乱七八糟
+special_proxy_list_urls:
+  # - "https://example.com/complex-format-list.txt"
+  # - "https://example.org/another-complex-list.txt"
 
 # 健康检查并发数（同时测试多少个代理）
 health_check_concurrency: 200
