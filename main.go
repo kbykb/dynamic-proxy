@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 // Config represents the application configuration
 type Config struct {
 	ProxyListURLs              []string `yaml:"proxy_list_urls"`
+	SpecialProxyListUrls       []string `yaml:"special_proxy_list_urls"` // 支持复杂格式的代理URL列表
 	HealthCheckConcurrency     int      `yaml:"health_check_concurrency"`
 	UpdateIntervalMinutes      int      `yaml:"update_interval_minutes"`
 	HealthCheck                struct {
@@ -39,6 +41,10 @@ type Config struct {
 
 // Global config variable
 var config Config
+
+// Simple regex to extract ip:port from any format (used for special proxy lists)
+// Matches: [IP]:[port] and ignores any protocol prefixes or extra text
+var simpleProxyRegex = regexp.MustCompile(`([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}):([0-9]{1,5})`)
 
 // loadConfig loads configuration from config.yaml
 func loadConfig(filename string) (*Config, error) {
@@ -129,6 +135,38 @@ func (p *ProxyPool) GetAll() []string {
 	return result
 }
 
+// parseSpecialProxyURL 使用简单正则表达式从复杂格式中提取代理
+// 支持格式：任何包含 ip:port 的行，自动忽略协议前缀和描述文本
+// 例如：socks5://83.217.209.26:1 [[家宽] 英国] → 提取 83.217.209.26:1
+func parseSpecialProxyURL(content string) ([]string, error) {
+	var proxies []string
+	proxySet := make(map[string]bool) // 用于去重
+
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// 使用简单正则直接提取 ip:port，忽略所有其他内容
+		matches := simpleProxyRegex.FindStringSubmatch(line)
+		if len(matches) >= 3 {
+			ip := matches[1]
+			port := matches[2]
+			proxy := fmt.Sprintf("%s:%s", ip, port)
+
+			// 去重
+			if !proxySet[proxy] {
+				proxySet[proxy] = true
+				proxies = append(proxies, proxy)
+			}
+		}
+	}
+
+	return proxies, nil
+}
+
 func fetchProxyList() ([]string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -142,9 +180,9 @@ func fetchProxyList() ([]string, error) {
 	allProxies := make([]string, 0)
 	proxySet := make(map[string]bool) // 用于去重
 
-	// 遍历所有配置的URL
+	// 处理普通代理URL（简单格式）
 	for _, url := range config.ProxyListURLs {
-		log.Printf("Fetching proxy list from: %s", url)
+		log.Printf("Fetching proxy list from regular URL: %s", url)
 
 		resp, err := client.Get(url)
 		if err != nil {
@@ -158,17 +196,27 @@ func fetchProxyList() ([]string, error) {
 			continue
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Printf("Warning: Error reading body from %s: %v", url, err)
+			continue
+		}
+
+		content := string(body)
 		count := 0
+		scanner := bufio.NewScanner(strings.NewReader(content))
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			// Support formats: ip:port or socks5://ip:port
-			if strings.HasPrefix(line, "socks5://") {
-				line = strings.TrimPrefix(line, "socks5://")
-			}
+			// Support formats: ip:port, http://ip:port, https://ip:port, socks5://ip:port, socks4://ip:port
+			// Strip protocol prefixes using string operations (no regex for better performance)
+			line = strings.TrimPrefix(line, "socks5://")
+			line = strings.TrimPrefix(line, "socks4://")
+			line = strings.TrimPrefix(line, "https://")
+			line = strings.TrimPrefix(line, "http://")
 
 			// 去重
 			if !proxySet[line] {
@@ -178,12 +226,51 @@ func fetchProxyList() ([]string, error) {
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			log.Printf("Warning: Error reading from %s: %v", url, err)
+		log.Printf("Fetched %d proxies from regular URL %s", count, url)
+	}
+
+	// 处理特殊代理URL（复杂格式）
+	for _, url := range config.SpecialProxyListUrls {
+		log.Printf("Fetching proxy list from special URL: %s", url)
+
+		resp, err := client.Get(url)
+		if err != nil {
+			log.Printf("Warning: Failed to fetch from special URL %s: %v", url, err)
+			continue
 		}
 
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Warning: Unexpected status code %d from special URL %s", resp.StatusCode, url)
+			resp.Body.Close()
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Printf("Fetched %d proxies from %s", count, url)
+		if err != nil {
+			log.Printf("Warning: Error reading body from special URL %s: %v", url, err)
+			continue
+		}
+
+		content := string(body)
+		// 使用特殊解析函数处理复杂格式
+		specialProxies, err := parseSpecialProxyURL(content)
+		if err != nil {
+			log.Printf("Warning: Error parsing special proxies from %s: %v", url, err)
+			continue
+		}
+
+		count := 0
+		for _, proxy := range specialProxies {
+			// All proxies are now in ip:port format for consistency
+			if !proxySet[proxy] {
+				proxySet[proxy] = true
+				allProxies = append(allProxies, proxy)
+				count++
+			}
+		}
+
+		log.Printf("Fetched %d proxies from special URL %s", count, url)
 	}
 
 	if len(allProxies) == 0 {
